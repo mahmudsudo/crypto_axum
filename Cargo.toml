@@ -1,0 +1,32 @@
+[package]
+name = "axum_signature"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = { version = "0.7" }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["trace"] }
+tokio = { version = "1.0", features = ["full"] }
+hyper = "1.0"
+
+# Ethereum/Crypto
+ethers = { version = "2.0", features = ["legacy"] }
+hex = "0.4"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+thiserror = "1.0"
+
+# Async traits
+async-trait = "0.1"
+
+# HTTP client for testing
+reqwest = { version = "0.11", features = ["json"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tower = { version = "0.4", features = ["util"] }
