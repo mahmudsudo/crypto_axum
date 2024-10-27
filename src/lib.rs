@@ -25,12 +25,15 @@ mod tests {
     use super::*;
     use crate::types::PaymentChannel;
     use crate::utils::crypto::create_message;
+    use axum::http::StatusCode;
     use axum::{
         body::Body,
         http::{self, HeaderMap, HeaderValue, Request},
     };
     use ethers::signers::{LocalWallet, Signer};
+    use ethers::types::{Address, H256, U256};
     use std::str::FromStr;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tower::util::ServiceExt;
 
     // Helper function to create a test wallet with a known private key
