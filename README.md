@@ -1,4 +1,4 @@
-# Axum Payment Channel Authentication
+# Payment Channel Authentication
 
 A Rust middleware for Axum that implements cryptographic authentication using payment channels. This library provides secure, efficient request authentication with built-in rate limiting and payment verification.
 
@@ -17,7 +17,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-axum_signature = "0.1.0"
+axum_signature = { git = "https://github.com/mahmudsudo/crypto_axum"}
 ```
 
 ## Quick Start
