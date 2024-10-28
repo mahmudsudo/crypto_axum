@@ -9,8 +9,10 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use ethers::prelude::Signature;
-use ethers::types::{RecoveryMessage, U256};
+use ethers::{
+    prelude::Signature,
+    types::{RecoveryMessage, U256},
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 async fn verify_and_update_channel(

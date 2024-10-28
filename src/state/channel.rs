@@ -1,9 +1,10 @@
 use crate::types::{AuthError, PaymentChannel};
-use ethers::addressbook::Address;
-use ethers::prelude::H256;
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use ethers::{addressbook::Address, prelude::H256};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::RwLock;
 
 #[derive(Clone)]
