@@ -1,269 +1,13 @@
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-    middleware::Next,
-    response::Response,
-    routing::post,
-    Json, Router,
-};
-use ethers::types::{Address, RecoveryMessage, Signature, H256, U256};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use thiserror::Error;
-use tokio::sync::RwLock;
+use crate::handlers::protected::protected_handler;
+use crate::middleware::auth::auth_middleware;
+use crate::state::channel::ChannelState;
+use axum::{routing::post, Router};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PaymentChannel {
-    pub sender: Address,
-    pub recipient: Address,
-    pub balance: U256,
-    pub nonce: U256,
-    pub expiration: U256,
-    pub channel_id: H256,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignedRequest {
-    pub message: Vec<u8>,
-    pub signature: Signature,
-    pub payment_channel: PaymentChannel,
-    pub payment_amount: U256,
-}
-
-#[derive(Clone)]
-pub struct ChannelState {
-    channels: Arc<RwLock<HashMap<H256, PaymentChannel>>>,
-    rate_limiter: Arc<RwLock<HashMap<Address, (u64, SystemTime)>>>,
-}
-
-impl ChannelState {
-    pub fn new() -> Self {
-        Self {
-            channels: Arc::new(RwLock::new(HashMap::new())),
-            rate_limiter: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    async fn check_rate_limit(&self, sender: Address) -> Result<(), AuthError> {
-        const RATE_LIMIT: u64 = 100;
-        const WINDOW: u64 = 60;
-
-        let mut rate_limits = self.rate_limiter.write().await;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-
-        let (count, last_reset) = rate_limits.entry(sender).or_insert((0, SystemTime::now()));
-
-        let last_reset_secs = last_reset.duration_since(UNIX_EPOCH).unwrap().as_secs();
-
-        if now - last_reset_secs >= WINDOW {
-            *count = 1;
-            *last_reset = SystemTime::now();
-            Ok(())
-        } else if *count >= RATE_LIMIT {
-            Err(AuthError::RateLimitExceeded)
-        } else {
-            *count += 1;
-            Ok(())
-        }
-    }
-}
-
-#[derive(Error, Debug)]
-pub enum AuthError {
-    #[error("Invalid signature")]
-    InvalidSignature,
-    #[error("Insufficient payment channel balance")]
-    InsufficientBalance,
-    #[error("Payment channel expired")]
-    Expired,
-    #[error("Invalid payment channel")]
-    InvalidChannel,
-    #[error("Rate limit exceeded")]
-    RateLimitExceeded,
-}
-
-impl From<AuthError> for StatusCode {
-    fn from(error: AuthError) -> Self {
-        match error {
-            AuthError::InvalidSignature => StatusCode::UNAUTHORIZED,
-            AuthError::InsufficientBalance => StatusCode::PAYMENT_REQUIRED,
-            AuthError::Expired => StatusCode::REQUEST_TIMEOUT,
-            AuthError::InvalidChannel => StatusCode::BAD_REQUEST,
-            AuthError::RateLimitExceeded => StatusCode::TOO_MANY_REQUESTS,
-        }
-    }
-}
-
-pub fn create_message(channel_id: H256, amount: U256, nonce: U256, request_data: &[u8]) -> Vec<u8> {
-    let mut message = Vec::new();
-    message.extend_from_slice(channel_id.as_bytes());
-    message.extend_from_slice(&amount.to_be_bytes_vec());
-    message.extend_from_slice(&nonce.to_be_bytes_vec());
-    message.extend_from_slice(request_data);
-    message
-}
-
-async fn verify_and_update_channel(
-    state: &ChannelState,
-    request: &SignedRequest,
-) -> Result<(), AuthError> {
-    println!("\n=== verify_and_update_channel ===");
-    println!("Payment amount: {}", request.payment_amount);
-    println!("Channel balance: {}", request.payment_channel.balance);
-
-    if request.payment_channel.balance < request.payment_amount {
-        println!("Failed: Insufficient balance");
-        return Err(AuthError::InsufficientBalance);
-    }
-
-    println!("Message length: {}", request.message.len());
-    println!("Original message: 0x{}", hex::encode(&request.message));
-
-    // Create a recovery message
-    let recoverable = RecoveryMessage::Data(request.message.clone());
-
-    let recovered_address = match request.signature.recover(recoverable) {
-        Ok(addr) => addr,
-        Err(e) => {
-            println!("Signature recovery failed: {:?}", e);
-            return Err(AuthError::InvalidSignature);
-        }
-    };
-
-    println!("Recovered address: {:?}", recovered_address);
-    println!("Expected sender: {:?}", request.payment_channel.sender);
-
-    if recovered_address != request.payment_channel.sender {
-        println!("Failed: Address mismatch");
-        return Err(AuthError::InvalidSignature);
-    }
-
-    state
-        .check_rate_limit(request.payment_channel.sender)
-        .await?;
-
-    let mut channels = state.channels.write().await;
-
-    // Check if channel exists and validate nonce
-    if let Some(existing_channel) = channels.get(&request.payment_channel.channel_id) {
-        // Ensure new nonce is greater than existing nonce
-        if request.payment_channel.nonce <= existing_channel.nonce {
-            println!(
-                "Failed: Invalid nonce - current: {}, received: {}",
-                existing_channel.nonce, request.payment_channel.nonce
-            );
-            return Err(AuthError::InvalidChannel);
-        }
-    }
-
-    // Update or insert the channel
-    channels.insert(
-        request.payment_channel.channel_id,
-        request.payment_channel.clone(),
-    );
-
-    Ok(())
-}
-
-pub async fn auth_middleware(
-    state: ChannelState,
-    request: Request<Body>,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    // Check timestamp first
-    let timestamp = request
-        .headers()
-        .get("X-Timestamp")
-        .and_then(|t| t.to_str().ok())
-        .and_then(|t| t.parse::<u64>().ok())
-        .ok_or(StatusCode::BAD_REQUEST)?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
-
-    if now - timestamp > 300 {
-        return Err(StatusCode::REQUEST_TIMEOUT);
-    }
-
-    // Get and validate all required headers
-    let signature = request
-        .headers()
-        .get("X-Signature")
-        .ok_or(StatusCode::UNAUTHORIZED)?
-        .to_str()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let message = request
-        .headers()
-        .get("X-Message")
-        .ok_or(StatusCode::UNAUTHORIZED)?
-        .to_str()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let payment_data = request
-        .headers()
-        .get("X-Payment")
-        .ok_or(StatusCode::UNAUTHORIZED)?
-        .to_str()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    // Parse signature
-    let signature = hex::decode(signature.trim_start_matches("0x"))
-        .map_err(|_| StatusCode::BAD_REQUEST)
-        .and_then(|bytes| {
-            Signature::try_from(bytes.as_slice()).map_err(|_| StatusCode::BAD_REQUEST)
-        })?;
-
-    // Parse message
-    let message = hex::decode(message).map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    // Parse payment channel data
-    let payment_channel: PaymentChannel =
-        serde_json::from_str(payment_data).map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    // Get request body
-    let (parts, body) = request.into_parts();
-    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(_) => return Err(StatusCode::BAD_REQUEST),
-    };
-
-    // Verify that the message matches what we expect
-    let reconstructed_message = create_message(
-        payment_channel.channel_id,
-        payment_channel.balance,
-        payment_channel.nonce,
-        &body_bytes,
-    );
-
-    if message != reconstructed_message {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    let payment_amount = U256::from(1_000_000_000_000_000_000u64); // 1 ETH in wei
-
-    let signed_request = SignedRequest {
-        message: message.clone(),
-        signature,
-        payment_channel: payment_channel.clone(),
-        payment_amount,
-    };
-
-    match verify_and_update_channel(&state, &signed_request).await {
-        Ok(_) => {
-            let request = Request::from_parts(parts, Body::from(body_bytes));
-            Ok(next.run(request).await)
-        }
-        Err(e) => Err(StatusCode::from(e)),
-    }
-}
+pub mod handlers;
+pub mod middleware;
+pub mod state;
+pub mod types;
+pub mod utils;
 
 pub fn create_protected_router() -> Router {
     let state = ChannelState::new();
@@ -276,31 +20,20 @@ pub fn create_protected_router() -> Router {
         }))
 }
 
-async fn protected_handler() -> Json<&'static str> {
-    Json("Access granted!")
-}
-
-trait U256Ext {
-    fn to_be_bytes_vec(&self) -> Vec<u8>;
-}
-
-impl U256Ext for U256 {
-    fn to_be_bytes_vec(&self) -> Vec<u8> {
-        let mut bytes = [0u8; 32];
-        self.to_big_endian(&mut bytes);
-        bytes.to_vec()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::PaymentChannel;
+    use crate::utils::crypto::create_message;
+    use axum::http::StatusCode;
     use axum::{
         body::Body,
         http::{self, HeaderMap, HeaderValue, Request},
     };
     use ethers::signers::{LocalWallet, Signer};
+    use ethers::types::{Address, H256, U256};
     use std::str::FromStr;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tower::util::ServiceExt;
 
     // Helper function to create a test wallet with a known private key
