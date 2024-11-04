@@ -9,10 +9,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
-use ethers::{
-    prelude::Signature,
-    types::{RecoveryMessage, U256},
-};
+use ethers::types::{Signature, U256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 async fn verify_and_update_channel(
@@ -23,27 +20,17 @@ async fn verify_and_update_channel(
     println!("Payment amount: {}", request.payment_amount);
     println!("Channel balance: {}", request.payment_channel.balance);
 
-    if request.payment_channel.balance < request.payment_amount {
-        println!("Failed: Insufficient balance");
-        return Err(AuthError::InsufficientBalance);
-    }
+    // Validate channel balance using network-specific logic
+    state.validate_channel(
+        request.payment_channel.channel_id,
+        request.payment_channel.balance
+    ).await?;
 
     println!("Message length: {}", request.message.len());
     println!("Original message: 0x{}", hex::encode(&request.message));
 
-    // Create a recovery message
-    let recoverable = RecoveryMessage::Data(request.message.clone());
-
-    let recovered_address = match request.signature.recover(recoverable) {
-        Ok(addr) => addr,
-        Err(e) => {
-            println!("Signature recovery failed: {:?}", e);
-            return Err(AuthError::InvalidSignature);
-        }
-    };
-
-    println!("Recovered address: {:?}", recovered_address);
-    println!("Expected sender: {:?}", request.payment_channel.sender);
+    // Verify signature using network-specific logic
+    let recovered_address = state.verify_signature(&request.signature, &request.message).await?;
 
     if recovered_address != request.payment_channel.sender {
         println!("Failed: Address mismatch");

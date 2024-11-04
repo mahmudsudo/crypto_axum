@@ -13,6 +13,14 @@ pub enum AuthError {
     InvalidChannel,
     #[error("Rate limit exceeded")]
     RateLimitExceeded,
+    #[error("Contract interaction failed: {0}")]
+    ContractError(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
+    #[error("Channel already exists")]
+    ChannelExists,
+    #[error("Invalid network configuration")]
+    InvalidConfig,
 }
 
 impl From<AuthError> for StatusCode {
@@ -23,6 +31,10 @@ impl From<AuthError> for StatusCode {
             AuthError::Expired => StatusCode::REQUEST_TIMEOUT,
             AuthError::InvalidChannel => StatusCode::BAD_REQUEST,
             AuthError::RateLimitExceeded => StatusCode::TOO_MANY_REQUESTS,
+            AuthError::ContractError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AuthError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            AuthError::ChannelExists => StatusCode::CONFLICT,
+            AuthError::InvalidConfig => StatusCode::BAD_REQUEST,
         }
     }
 }
